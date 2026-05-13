@@ -1,0 +1,1685 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Castaway — CS174A Spring 2026</title>
+<style>
+  /* ============================================================
+     [JEREMY] HUD / Inventory styling — part of Player & Interaction
+     ============================================================ */
+  html, body {
+    margin: 0; padding: 0; overflow: hidden;
+    width: 100%; height: 100%;
+    font-family: "Courier New", monospace;
+    background: #000; color: #fff;
+    user-select: none;
+  }
+  canvas { display: block; }
+
+  #blocker {
+    position: absolute; inset: 0;
+    background: rgba(0,0,0,0.7);
+    display: flex; flex-direction: column;
+    justify-content: center; align-items: center;
+    cursor: pointer; z-index: 100;
+  }
+  #blocker h1 { font-size: 48px; margin: 0 0 16px; letter-spacing: 4px; }
+  #blocker p  { font-size: 16px; max-width: 520px; line-height: 1.6; text-align: center; }
+  #blocker .key { color: #ffd27a; }
+
+  #hud {
+    position: absolute; top: 10px; left: 10px;
+    background: rgba(0,0,0,0.45);
+    padding: 8px 12px; border-radius: 4px;
+    font-size: 14px; line-height: 1.5;
+    pointer-events: none; z-index: 50;
+  }
+  #hud .label { color: #ffd27a; }
+
+  #crosshair {
+    position: absolute; top: 50%; left: 50%;
+    width: 14px; height: 14px;
+    transform: translate(-50%, -50%);
+    pointer-events: none; z-index: 40;
+  }
+  #crosshair::before, #crosshair::after {
+    content: ""; position: absolute; background: #fff;
+  }
+  #crosshair::before { left: 6px; top: 0;  width: 2px; height: 14px; }
+  #crosshair::after  { top: 6px;  left: 0; width: 14px; height: 2px; }
+
+  #hotbar {
+    position: absolute; bottom: 14px; left: 50%;
+    transform: translateX(-50%);
+    display: flex; gap: 6px;
+    z-index: 50;
+  }
+  .slot {
+    width: 52px; height: 52px;
+    background: rgba(0,0,0,0.55);
+    border: 2px solid #444;
+    border-radius: 4px;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    font-size: 11px; color: #ddd;
+  }
+  .slot.active { border-color: #ffd27a; box-shadow: 0 0 10px #ffd27a; }
+  .slot .icon { font-size: 18px; line-height: 1; margin-bottom: 2px; }
+  .slot .count { font-size: 10px; color: #fff; }
+  .slot .num { position: absolute; font-size: 9px; color: #999; transform: translate(-22px, -22px); }
+
+  #buildIndicator {
+    position: absolute; top: 10px; right: 10px;
+    background: rgba(140, 80, 0, 0.7);
+    padding: 6px 10px; border-radius: 4px;
+    font-size: 13px; display: none; z-index: 50;
+  }
+  #buildIndicator.active { display: block; }
+
+  #msg {
+    position: absolute; bottom: 90px; left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0,0,0,0.6);
+    padding: 6px 14px; border-radius: 4px;
+    font-size: 13px; opacity: 0;
+    transition: opacity 0.25s;
+    pointer-events: none; z-index: 60;
+  }
+</style>
+</head>
+<body>
+
+<div id="blocker">
+  <h1>CASTAWAY</h1>
+  <p>
+    You wake on a tropical island after a shipwreck. You have one day to gather resources,
+    build defenses, and survive the night.<br><br>
+    <span class="key">WASD</span> move &nbsp;·&nbsp;
+    <span class="key">Mouse</span> look &nbsp;·&nbsp;
+    <span class="key">Space</span> jump<br>
+    <span class="key">Left click</span> chop / mine / attack &nbsp;·&nbsp;
+    <span class="key">Right click</span> place wall (build mode)<br>
+    <span class="key">1–9</span> select slot &nbsp;·&nbsp;
+    <span class="key">B</span> toggle build &nbsp;·&nbsp;
+    <span class="key">E</span> add fuel to campfire &nbsp;·&nbsp;
+    <span class="key">F</span> wireframe debug<br><br>
+    <b>Click anywhere to begin</b>
+  </p>
+</div>
+
+<div id="hud">
+  <div><span class="label">Time:</span> <span id="timeText">Dawn</span></div>
+  <div><span class="label">Health:</span> <span id="healthText">100</span></div>
+  <div><span class="label">Days Survived:</span> <span id="daysText">0</span></div>
+  <div><span class="label">Campfire Fuel:</span> <span id="fuelText">0</span></div>
+  <div><span class="label">Mobs:</span> <span id="mobText">0</span></div>
+</div>
+
+<div id="crosshair"></div>
+<div id="buildIndicator">BUILD MODE — right click to place wall (cost: 2 wood + 1 stone)</div>
+<div id="msg"></div>
+<div id="hotbar"></div>
+
+<!-- Three.js r128 from cdnjs.cloudflare.com -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<!-- [BRÜNO] OBJ + MTL loaders for the mob character model (per spec: characters via OBJLoader) -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/MTLLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js"></script>
+
+<script>
+/* ==================================================================================
+   CASTAWAY — CS174A Spring 2026
+   Team: Yahir Dimas, Jeremy Dimas, Brüno Cardenas-Bourges
+   ----------------------------------------------------------------------------------
+   Role tags throughout this file:
+     [YAHIR]  -- World & Atmosphere: island, water shader, vegetation, sky,
+                 day-night cycle, sun & shadows, campfire light
+     [JEREMY] -- Player & Interaction: first-person controls, raycasting, inventory,
+                 collision detection
+     [BRÜNO]  -- AI & Combat: mob models, FSM, A* pathfinding, combat math, spawning
+     [SHARED] -- Game loop, init wiring, shared utilities
+   ----------------------------------------------------------------------------------
+   Advanced features implemented (per proposal):
+     1. AABB collision detection with spatial-hash broad-phase + slide projection
+        [JEREMY — primary, owned in Player & Interaction section]
+     2. Real-time shadow mapping with directional sun + point-light campfire at night
+        [YAHIR — owned in World & Atmosphere section]
+     3. AI mob behaviour: finite-state machine (WANDER / CHASE / ATTACK) with A*
+        pathfinding on a coarse grid that re-bakes on wall placement
+        [BRÜNO — owned in AI & Combat section]
+   ================================================================================== */
+
+/* ----------------------------------------------------------------------------------
+   [SHARED] Globals
+   ---------------------------------------------------------------------------------- */
+let scene, camera, renderer, clock;
+let sun, sunHelperPivot, ambient, hemi;
+let water, waterUniforms, skyUniforms;
+let campfire, campfireLight, campfireFlame;
+let player = {
+  obj: null,            // a THREE.Object3D the camera is parented to
+  velocity: new THREE.Vector3(),
+  onGround: true,
+  height: 1.7,
+  radius: 0.35,
+  speed: 5.5,
+  jumpSpeed: 6.5,
+  health: 100,
+  attackCooldown: 0,
+};
+const keys = {};
+let pointerLocked = false;
+let yaw = 0, pitch = 0;
+
+const ISLAND_RADIUS = 40;
+const WORLD = {
+  trees: [],   // { mesh, aabb, hp, type:'tree' }
+  rocks: [],   // { mesh, aabb, hp, type:'rock' }
+  bushes: [],  // { mesh, aabb, hp, type:'bush' }
+  walls: [],   // { mesh, aabb, hp, type:'wall' }
+  mobs:  [],   // { mesh, aabb, hp, state, path, ... }
+};
+let spatialHash = new Map(); // [JEREMY] broad-phase grid
+const HASH_CELL = 4;
+
+let dayTime = 0.15;            // 0..1 across one full day-night cycle
+const DAY_LENGTH = 180;        // 3 minutes per cycle, per spec
+let daysSurvived = 0;
+let nightSpawnsTriggered = false;
+
+const inventory = {
+  wood: 0, stone: 0, berries: 0,
+  selected: 0,                 // 0..8 hotbar index
+  slots: [
+    { key:'fist',   label:'Fist',   icon:'✊' },
+    { key:'wood',   label:'Wood',   icon:'🪵' },
+    { key:'stone',  label:'Stone',  icon:'🪨' },
+    { key:'berries',label:'Berry',  icon:'🍒' },
+    { key:'wall',   label:'Wall',   icon:'🧱' },
+    { key:'fuel',   label:'Fuel',   icon:'🔥' },
+    { key:'',       label:'-',      icon:'·' },
+    { key:'',       label:'-',      icon:'·' },
+    { key:'',       label:'-',      icon:'·' },
+  ],
+};
+let buildMode = false;
+let wireframe = false;
+let ghostWall = null;            // build-mode preview
+let campfireFuel = 100;          // burns down through the night
+
+/* ==================================================================================
+   [YAHIR]  W O R L D   &   A T M O S P H E R E
+   ================================================================================== */
+
+/* ---- [YAHIR] Sky gradient using a custom vertex+fragment shader ------------------ */
+function createSky() {
+  const skyVert = `
+    varying vec3 vWorldPos;
+    void main() {
+      vWorldPos = position;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `;
+  // Day-night gradient is driven from the JS side via the nightFactor uniform.
+  const skyFrag = `
+    uniform vec3 topDay;     uniform vec3 bottomDay;
+    uniform vec3 topNight;   uniform vec3 bottomNight;
+    uniform vec3 sunsetTint; uniform float nightFactor;
+    uniform float sunsetFactor;
+    varying vec3 vWorldPos;
+    void main() {
+      float h = normalize(vWorldPos).y;
+      vec3 top    = mix(topDay,    topNight,    nightFactor);
+      vec3 bottom = mix(bottomDay, bottomNight, nightFactor);
+      bottom = mix(bottom, sunsetTint, sunsetFactor);
+      vec3 col = mix(bottom, top, smoothstep(-0.1, 0.7, h));
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `;
+  skyUniforms = {
+    topDay:     { value: new THREE.Color(0x3a78c2) },
+    bottomDay:  { value: new THREE.Color(0xb9d8f0) },
+    topNight:   { value: new THREE.Color(0x05060f) },
+    bottomNight:{ value: new THREE.Color(0x0a1029) },
+    sunsetTint: { value: new THREE.Color(0xff7a3d) },
+    nightFactor:{ value: 0.0 },
+    sunsetFactor:{ value: 0.0 },
+  };
+  const sky = new THREE.Mesh(
+    new THREE.SphereGeometry(500, 32, 16),
+    new THREE.ShaderMaterial({
+      uniforms: skyUniforms, vertexShader: skyVert, fragmentShader: skyFrag,
+      side: THREE.BackSide, depthWrite: false,
+    })
+  );
+  scene.add(sky);
+}
+
+/* ---- [YAHIR] Sun + ambient + hemisphere lights, with day-night driving ------------ */
+function createLights() {
+  // [YAHIR] [ADVANCED FEATURE 2] Real-time shadow mapping setup.
+  sun = new THREE.DirectionalLight(0xffffff, 1.0);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  // Tight frustum fitted around the playable island for high texel density.
+  const s = ISLAND_RADIUS + 6;
+  sun.shadow.camera.left   = -s;
+  sun.shadow.camera.right  =  s;
+  sun.shadow.camera.top    =  s;
+  sun.shadow.camera.bottom = -s;
+  sun.shadow.camera.near   =  1;
+  sun.shadow.camera.far    = 200;
+  sun.shadow.bias          = -0.0005;
+  scene.add(sun);
+  scene.add(sun.target);
+
+  ambient = new THREE.AmbientLight(0xffffff, 0.25);
+  scene.add(ambient);
+
+  hemi = new THREE.HemisphereLight(0xbcd9ff, 0xc2a26b, 0.35);
+  scene.add(hemi);
+}
+
+/* ---- [YAHIR] Drive sun rotation, light colours, and sky uniforms from dayTime ----- */
+function updateDayNight(dt) {
+  dayTime = (dayTime + dt / DAY_LENGTH) % 1.0;
+
+  // sun angle: rotate around X-axis; dayTime=0 -> sunrise, 0.25 -> noon,
+  // 0.5 -> sunset, 0.75 -> midnight.
+  const sunAngle = dayTime * Math.PI * 2 - Math.PI / 2;
+  const sunDir = new THREE.Vector3(0, Math.sin(sunAngle), Math.cos(sunAngle));
+  const SUN_DIST = 120;
+  sun.position.copy(sunDir.clone().multiplyScalar(SUN_DIST));
+  sun.target.position.set(0, 0, 0);
+  sun.target.updateMatrixWorld();
+
+  // light intensity: high at noon, off at night
+  const dayStrength = Math.max(0, sunDir.y);                 // 0..1
+  sun.intensity = dayStrength * 1.1;
+
+  // golden-hour tint when sun is low but above horizon
+  const sunset = Math.max(0, 1.0 - Math.abs(sunDir.y - 0.05) * 6.0) * (sunDir.y > -0.1 ? 1 : 0);
+  sun.color.setHSL(0.08 + 0.05 * (1 - dayStrength), 0.7, 0.55 + 0.3 * dayStrength);
+
+  ambient.intensity = 0.10 + 0.30 * dayStrength;
+  hemi.intensity    = 0.15 + 0.45 * dayStrength;
+
+  // sky shader uniforms
+  const nightFactor = THREE.MathUtils.clamp(1 - sunDir.y * 2.5, 0, 1);
+  skyUniforms.nightFactor.value  = nightFactor;
+  skyUniforms.sunsetFactor.value = sunset;
+
+  // water uniforms shift colour too
+  waterUniforms.nightFactor.value = nightFactor;
+  waterUniforms.time.value += dt;
+
+  // campfire light strength: rises as it gets dark, falls when fuel runs out
+  const darkness = nightFactor;
+  campfireFuel = Math.max(0, campfireFuel - dt * (darkness > 0.4 ? 1.2 : 0.0));
+  const fuelFactor = Math.min(1, campfireFuel / 50);
+  campfireLight.intensity = 4.0 * darkness * fuelFactor;
+  campfireFlame.scale.y = 0.6 + 0.4 * Math.sin(performance.now() * 0.012) * fuelFactor + 0.6 * fuelFactor;
+  campfireFlame.visible = fuelFactor > 0.02;
+
+  // HUD time-of-day label
+  const t = dayTime;
+  let label = 'Dawn';
+  if (t < 0.10)      label = 'Dawn';
+  else if (t < 0.40) label = 'Day';
+  else if (t < 0.55) label = 'Dusk';
+  else if (t < 0.95) label = 'Night';
+  else               label = 'Dawn';
+  document.getElementById('timeText').textContent = label;
+
+  // Trigger night-time mob spawns once per night
+  // [BRÜNO] hook into AI section — handled below in spawnMobsForNight()
+  if (label === 'Night' && !nightSpawnsTriggered) {
+    nightSpawnsTriggered = true;
+    spawnMobsForNight();
+  }
+  if (label === 'Dawn' && nightSpawnsTriggered) {
+    nightSpawnsTriggered = false;
+    daysSurvived++;
+    document.getElementById('daysText').textContent = daysSurvived;
+    // sweep any remaining mobs at sunrise
+    WORLD.mobs.forEach(m => scene.remove(m.mesh));
+    WORLD.mobs.length = 0;
+    rebakeAStarGrid();
+  }
+}
+
+/* ---- [YAHIR] Island geometry: sand disc + soft hill in the middle ----------------- */
+function createIsland() {
+  const seg = 64;
+  const geo = new THREE.CircleGeometry(ISLAND_RADIUS, seg);
+  // gently raise the centre so the island reads as not perfectly flat
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i);
+    const r = Math.sqrt(x*x + y*y);
+    const h = Math.cos(r / ISLAND_RADIUS * Math.PI * 0.5) * 0.8;
+    pos.setZ(i, h);
+  }
+  geo.rotateX(-Math.PI / 2);
+  geo.computeVertexNormals();
+
+  // procedural sand texture (canvas-painted, then used as a colour map)
+  const tex = makeNoiseTexture(256, [0xe8d29a, 0xd9bd7d, 0xead49a]);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(8, 8);
+  const mat = new THREE.MeshStandardMaterial({
+    map: tex, roughness: 0.95, metalness: 0.0,
+  });
+  const island = new THREE.Mesh(geo, mat);
+  island.receiveShadow = true;
+  scene.add(island);
+}
+
+/* ---- [YAHIR] Animated water plane using a custom shader --------------------------- */
+function createWater() {
+  const waterVert = `
+    uniform float time;
+    varying vec2 vUv;
+    varying float vWave;
+    void main() {
+      vUv = uv;
+      vec3 pos = position;
+      float w = sin(pos.x * 0.25 + time * 1.1) * 0.18
+              + cos(pos.y * 0.35 + time * 0.8) * 0.18
+              + sin((pos.x + pos.y) * 0.5 + time * 1.7) * 0.06;
+      pos.z += w;
+      vWave = w;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+    }
+  `;
+  const waterFrag = `
+    uniform float time;
+    uniform vec3  dayColor;
+    uniform vec3  nightColor;
+    uniform float nightFactor;
+    varying vec2  vUv;
+    varying float vWave;
+    void main() {
+      vec3 base = mix(dayColor, nightColor, nightFactor);
+      float ripple = sin(vUv.x * 60.0 + time * 1.8) * sin(vUv.y * 60.0 + time * 1.3);
+      vec3 col = base + ripple * 0.04 + vWave * 0.15;
+      gl_FragColor = vec4(col, 0.88);
+    }
+  `;
+  waterUniforms = {
+    time:        { value: 0 },
+    dayColor:    { value: new THREE.Color(0x2e6fb7) },
+    nightColor:  { value: new THREE.Color(0x05122a) },
+    nightFactor: { value: 0 },
+  };
+  const geo = new THREE.PlaneGeometry(400, 400, 100, 100);
+  geo.rotateX(-Math.PI / 2);
+  water = new THREE.Mesh(geo, new THREE.ShaderMaterial({
+    uniforms: waterUniforms, vertexShader: waterVert, fragmentShader: waterFrag,
+    transparent: true,
+  }));
+  water.position.y = -0.2;
+  scene.add(water);
+
+  // visible shipwreck silhouette in the shallows, per the story
+  const wreck = new THREE.Group();
+  const hull = new THREE.Mesh(
+    new THREE.BoxGeometry(6, 2.2, 2.4),
+    new THREE.MeshStandardMaterial({ color: 0x4a2e1c, roughness: 0.9 })
+  );
+  hull.rotation.z = 0.4;
+  hull.castShadow = hull.receiveShadow = true;
+  wreck.add(hull);
+  const mast = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.15, 0.2, 6),
+    new THREE.MeshStandardMaterial({ color: 0x33200f, roughness: 0.9 })
+  );
+  mast.position.set(0, 2.5, 0);
+  mast.rotation.z = 0.35;
+  mast.castShadow = true;
+  wreck.add(mast);
+  wreck.position.set(ISLAND_RADIUS - 4, -0.4, ISLAND_RADIUS - 6);
+  scene.add(wreck);
+}
+
+/* ---- [YAHIR] Vegetation, rocks, bushes — all axis-aligned AABBs for collision ---- */
+function createVegetation() {
+  // Palm trees: cylinder trunk + cone frond cluster (per spec: low-poly primitives)
+  for (let i = 0; i < 38; i++) {
+    const r = 4 + Math.random() * (ISLAND_RADIUS - 8);
+    const a = Math.random() * Math.PI * 2;
+    const x = Math.cos(a) * r, z = Math.sin(a) * r;
+    const tree = makePalmTree();
+    tree.position.set(x, 0, z);
+    tree.rotation.y = Math.random() * Math.PI * 2;
+    scene.add(tree);
+    // AABB: a vertical column roughly trunk-sized at the base
+    const aabb = new THREE.Box3(
+      new THREE.Vector3(x - 0.5, 0,   z - 0.5),
+      new THREE.Vector3(x + 0.5, 6,   z + 0.5)
+    );
+    WORLD.trees.push({ mesh: tree, aabb, hp: 3, type: 'tree' });
+  }
+  // Rocks: octahedral lumps
+  for (let i = 0; i < 22; i++) {
+    const r = 3 + Math.random() * (ISLAND_RADIUS - 6);
+    const a = Math.random() * Math.PI * 2;
+    const x = Math.cos(a) * r, z = Math.sin(a) * r;
+    const rock = makeRock();
+    rock.position.set(x, 0.0, z);
+    scene.add(rock);
+    const s = rock.userData.size;
+    const aabb = new THREE.Box3(
+      new THREE.Vector3(x - s, 0,     z - s),
+      new THREE.Vector3(x + s, s*2,   z + s)
+    );
+    WORLD.rocks.push({ mesh: rock, aabb, hp: 4, type: 'rock' });
+  }
+  // Berry bushes
+  for (let i = 0; i < 18; i++) {
+    const r = 3 + Math.random() * (ISLAND_RADIUS - 5);
+    const a = Math.random() * Math.PI * 2;
+    const x = Math.cos(a) * r, z = Math.sin(a) * r;
+    const bush = makeBush();
+    bush.position.set(x, 0, z);
+    scene.add(bush);
+    const aabb = new THREE.Box3(
+      new THREE.Vector3(x - 0.6, 0,   z - 0.6),
+      new THREE.Vector3(x + 0.6, 0.9, z + 0.6)
+    );
+    WORLD.bushes.push({ mesh: bush, aabb, hp: 1, type: 'bush' });
+  }
+}
+
+function makePalmTree() {
+  const g = new THREE.Group();
+  const trunk = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.22, 0.32, 5, 8),
+    new THREE.MeshStandardMaterial({ color: 0x6a3b1c, roughness: 0.85 })
+  );
+  trunk.position.y = 2.5;
+  trunk.castShadow = trunk.receiveShadow = true;
+  g.add(trunk);
+  // a small cluster of cone "fronds" splayed outward
+  for (let i = 0; i < 6; i++) {
+    const frond = new THREE.Mesh(
+      new THREE.ConeGeometry(0.4, 2.2, 6),
+      new THREE.MeshStandardMaterial({ color: 0x2c7d2a, roughness: 0.8 })
+    );
+    frond.position.y = 5;
+    const ang = (i / 6) * Math.PI * 2;
+    frond.position.x = Math.cos(ang) * 0.8;
+    frond.position.z = Math.sin(ang) * 0.8;
+    frond.rotation.z = -Math.PI / 3 * Math.cos(ang);
+    frond.rotation.x =  Math.PI / 3 * Math.sin(ang);
+    frond.castShadow = true;
+    g.add(frond);
+  }
+  // a coconut or two
+  for (let i = 0; i < 2; i++) {
+    const c = new THREE.Mesh(
+      new THREE.SphereGeometry(0.22, 8, 6),
+      new THREE.MeshStandardMaterial({ color: 0x3b2412, roughness: 0.7 })
+    );
+    c.position.set((Math.random()-0.5)*0.5, 4.6 + Math.random()*0.3, (Math.random()-0.5)*0.5);
+    c.castShadow = true;
+    g.add(c);
+  }
+  return g;
+}
+
+function makeRock() {
+  const size = 0.6 + Math.random() * 0.6;
+  const m = new THREE.Mesh(
+    new THREE.DodecahedronGeometry(size, 0),
+    new THREE.MeshStandardMaterial({ color: 0x7a7a78, roughness: 0.95, flatShading: true })
+  );
+  m.rotation.set(Math.random()*Math.PI, Math.random()*Math.PI, Math.random()*Math.PI);
+  m.castShadow = m.receiveShadow = true;
+  m.userData.size = size;
+  return m;
+}
+
+function makeBush() {
+  const g = new THREE.Group();
+  const leaves = new THREE.Mesh(
+    new THREE.SphereGeometry(0.5, 8, 6),
+    new THREE.MeshStandardMaterial({ color: 0x2f6b2a, roughness: 0.9 })
+  );
+  leaves.position.y = 0.45;
+  leaves.castShadow = leaves.receiveShadow = true;
+  g.add(leaves);
+  for (let i = 0; i < 5; i++) {
+    const berry = new THREE.Mesh(
+      new THREE.SphereGeometry(0.07, 6, 6),
+      new THREE.MeshStandardMaterial({ color: 0xb1262b, roughness: 0.5 })
+    );
+    berry.position.set(
+      (Math.random()-0.5)*0.7,
+      0.45 + (Math.random()-0.3)*0.3,
+      (Math.random()-0.5)*0.7
+    );
+    g.add(berry);
+  }
+  return g;
+}
+
+/* ---- [YAHIR] Campfire: log pile + point light + flame cone --------------------- */
+function createCampfire() {
+  campfire = new THREE.Group();
+  // log ring
+  for (let i = 0; i < 6; i++) {
+    const log = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.12, 0.12, 1.0, 6),
+      new THREE.MeshStandardMaterial({ color: 0x5a3015, roughness: 0.9 })
+    );
+    const a = (i / 6) * Math.PI * 2;
+    log.position.set(Math.cos(a)*0.4, 0.12, Math.sin(a)*0.4);
+    log.rotation.z = Math.PI / 2;
+    log.rotation.y = a;
+    log.castShadow = log.receiveShadow = true;
+    campfire.add(log);
+  }
+  // glowing embers base
+  const embers = new THREE.Mesh(
+    new THREE.SphereGeometry(0.35, 12, 8),
+    new THREE.MeshBasicMaterial({ color: 0xff5a1a })
+  );
+  embers.position.y = 0.18;
+  campfire.add(embers);
+  // animated flame (cone, scaled by time)
+  campfireFlame = new THREE.Mesh(
+    new THREE.ConeGeometry(0.4, 1.1, 8),
+    new THREE.MeshBasicMaterial({ color: 0xffb33a, transparent: true, opacity: 0.85 })
+  );
+  campfireFlame.position.y = 0.75;
+  campfire.add(campfireFlame);
+  campfire.position.set(0, 0, 0);
+  scene.add(campfire);
+
+  // [YAHIR] [ADVANCED FEATURE 2] Second shadow-casting light: campfire point light.
+  campfireLight = new THREE.PointLight(0xffa14a, 0.0, 22, 1.6);
+  campfireLight.castShadow = true;
+  campfireLight.shadow.mapSize.set(512, 512);
+  campfireLight.shadow.camera.near = 0.5;
+  campfireLight.shadow.camera.far  = 22;
+  campfireLight.position.set(0, 1.2, 0);
+  scene.add(campfireLight);
+}
+
+/* ==================================================================================
+   [JEREMY]  P L A Y E R   &   I N T E R A C T I O N
+   ================================================================================== */
+
+/* ---- [JEREMY] Minimal PointerLockControls equivalent (kept inline so no extra CDN) */
+function setupPointerLock() {
+  const blocker = document.getElementById('blocker');
+  blocker.addEventListener('click', () => {
+    document.body.requestPointerLock();
+  });
+  document.addEventListener('pointerlockchange', () => {
+    pointerLocked = (document.pointerLockElement === document.body);
+    blocker.style.display = pointerLocked ? 'none' : 'flex';
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!pointerLocked) return;
+    yaw   -= e.movementX * 0.0025;
+    pitch -= e.movementY * 0.0025;
+    pitch = Math.max(-Math.PI/2 + 0.05, Math.min(Math.PI/2 - 0.05, pitch));
+  });
+}
+
+/* ---- [JEREMY] Keyboard input + hotkeys ---------------------------------------- */
+function setupInput() {
+  window.addEventListener('keydown', (e) => {
+    keys[e.code] = true;
+    // hotbar selection 1..9
+    if (e.code.startsWith('Digit')) {
+      const n = parseInt(e.code.slice(5), 10);
+      if (n >= 1 && n <= 9) { inventory.selected = n - 1; refreshHotbar(); }
+    }
+    if (e.code === 'KeyB') toggleBuildMode();
+    if (e.code === 'KeyE') addFuel();
+    if (e.code === 'KeyF') toggleWireframe();
+  });
+  window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+  // [JEREMY] Mouse buttons -> raycast actions
+  window.addEventListener('mousedown', (e) => {
+    if (!pointerLocked) return;
+    if (e.button === 0) leftClickAction();
+    if (e.button === 2) rightClickAction();
+  });
+  window.addEventListener('contextmenu', (e) => e.preventDefault());
+}
+
+/* ---- [JEREMY] Per-frame player movement, jumping, and gravity ----------------- */
+function updatePlayer(dt) {
+  // facing vectors derived from yaw/pitch
+  camera.rotation.set(0, 0, 0);
+  camera.rotation.order = 'YXZ';
+  camera.rotation.y = yaw;
+  camera.rotation.x = pitch;
+
+  const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
+  const right   = new THREE.Vector3( Math.cos(yaw), 0, -Math.sin(yaw));
+  const move = new THREE.Vector3();
+  if (keys['KeyW']) move.add(forward);
+  if (keys['KeyS']) move.sub(forward);
+  if (keys['KeyD']) move.add(right);
+  if (keys['KeyA']) move.sub(right);
+  if (move.lengthSq() > 0) move.normalize().multiplyScalar(player.speed);
+
+  // jump
+  if (keys['Space'] && player.onGround) {
+    player.velocity.y = player.jumpSpeed;
+    player.onGround = false;
+  }
+  // gravity
+  player.velocity.y -= 18 * dt;
+
+  // candidate next position
+  const cur = camera.position.clone();
+  const next = cur.clone();
+  next.x += move.x * dt;
+  next.z += move.z * dt;
+  next.y += player.velocity.y * dt;
+
+  // [JEREMY] [ADVANCED FEATURE 1] AABB collision detection with slide projection.
+  // We test the player AABB at the candidate position against nearby world AABBs
+  // using a coarse spatial hash to bound the number of pairwise checks.
+  const resolved = resolvePlayerCollision(cur, next);
+  camera.position.copy(resolved);
+
+  // floor clamp
+  if (camera.position.y <= player.height) {
+    camera.position.y = player.height;
+    player.velocity.y = 0;
+    player.onGround = true;
+  }
+
+  // keep player on the island (soft barrier at water edge)
+  const r2 = camera.position.x*camera.position.x + camera.position.z*camera.position.z;
+  const lim = (ISLAND_RADIUS - 1);
+  if (r2 > lim*lim) {
+    const d = Math.sqrt(r2);
+    camera.position.x *= lim / d;
+    camera.position.z *= lim / d;
+  }
+
+  // build-mode ghost preview tracks the crosshair
+  if (buildMode) updateGhostWall();
+
+  // attack cooldown tick
+  player.attackCooldown = Math.max(0, player.attackCooldown - dt);
+}
+
+/* ---- [JEREMY] [ADVANCED FEATURE 1] AABB collision with spatial-hash broad phase --- */
+function rebuildSpatialHash() {
+  spatialHash.clear();
+  const all = [
+    ...WORLD.trees, ...WORLD.rocks, ...WORLD.bushes, ...WORLD.walls
+  ];
+  for (const o of all) {
+    const min = o.aabb.min, max = o.aabb.max;
+    const x0 = Math.floor(min.x / HASH_CELL), x1 = Math.floor(max.x / HASH_CELL);
+    const z0 = Math.floor(min.z / HASH_CELL), z1 = Math.floor(max.z / HASH_CELL);
+    for (let xi = x0; xi <= x1; xi++) {
+      for (let zi = z0; zi <= z1; zi++) {
+        const k = xi + ',' + zi;
+        if (!spatialHash.has(k)) spatialHash.set(k, []);
+        spatialHash.get(k).push(o);
+      }
+    }
+  }
+}
+function queryHash(x, z) {
+  const xi = Math.floor(x / HASH_CELL), zi = Math.floor(z / HASH_CELL);
+  const out = [];
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dz = -1; dz <= 1; dz++) {
+      const cell = spatialHash.get((xi+dx) + ',' + (zi+dz));
+      if (cell) for (const o of cell) if (!out.includes(o)) out.push(o);
+    }
+  }
+  return out;
+}
+function playerAABBAt(p) {
+  return new THREE.Box3(
+    new THREE.Vector3(p.x - player.radius, p.y - player.height, p.z - player.radius),
+    new THREE.Vector3(p.x + player.radius, p.y,                  p.z + player.radius)
+  );
+}
+function resolvePlayerCollision(cur, next) {
+  // Slide projection: try X axis alone, then Z axis alone — if either separates
+  // from a colliding AABB, take that as the resolved coordinate. This is the
+  // standard cheap slide we described in the proposal.
+  const out = cur.clone();
+  // Y is handled separately by gravity/floor; only check XZ collisions here.
+  const tryX = out.clone(); tryX.x = next.x; tryX.y = next.y;
+  const boxX = playerAABBAt(tryX);
+  let blockedX = false;
+  for (const o of queryHash(tryX.x, tryX.z)) {
+    if (boxX.intersectsBox(o.aabb)) { blockedX = true; break; }
+  }
+  if (!blockedX) out.x = next.x;
+
+  const tryZ = out.clone(); tryZ.z = next.z; tryZ.y = next.y;
+  const boxZ = playerAABBAt(tryZ);
+  let blockedZ = false;
+  for (const o of queryHash(tryZ.x, tryZ.z)) {
+    if (boxZ.intersectsBox(o.aabb)) { blockedZ = true; break; }
+  }
+  if (!blockedZ) out.z = next.z;
+
+  out.y = next.y; // vertical is governed by gravity/floor clamp
+  return out;
+}
+
+/* ---- [JEREMY] Raycasting interactions (chop / mine / attack / pick / place) ---- */
+const interactRaycaster = new THREE.Raycaster();
+interactRaycaster.far = 4.0;
+
+function leftClickAction() {
+  // [JEREMY] Per spec: every interaction routes through THREE.Raycaster from the camera.
+  if (player.attackCooldown > 0) return;
+  player.attackCooldown = 0.25;
+
+  interactRaycaster.set(camera.position, camera.getWorldDirection(new THREE.Vector3()));
+
+  // try mobs first (combat)
+  const mobHits = interactRaycaster.intersectObjects(WORLD.mobs.map(m => m.mesh), true);
+  if (mobHits.length) {
+    const hitMesh = mobHits[0].object;
+    const mob = WORLD.mobs.find(m => m.mesh === hitMesh || hitMesh.parent === m.mesh ||
+                                      (hitMesh.parent && hitMesh.parent.parent === m.mesh));
+    if (mob) damageMob(mob, 25);
+    return;
+  }
+
+  // then world resources
+  const allRes = [...WORLD.trees, ...WORLD.rocks, ...WORLD.bushes];
+  const meshes = allRes.map(o => o.mesh);
+  const hits = interactRaycaster.intersectObjects(meshes, true);
+  if (!hits.length) return;
+  // walk up to the group we registered
+  let topMesh = hits[0].object;
+  while (topMesh.parent && !allRes.find(o => o.mesh === topMesh)) topMesh = topMesh.parent;
+  const res = allRes.find(o => o.mesh === topMesh);
+  if (!res) return;
+  res.hp -= 1;
+  flashMesh(res.mesh, 0xffffff);
+  if (res.hp <= 0) harvestResource(res);
+}
+
+function harvestResource(res) {
+  if (res.type === 'tree')  { inventory.wood    += 2; showMsg('+2 wood'); }
+  if (res.type === 'rock')  { inventory.stone   += 2; showMsg('+2 stone'); }
+  if (res.type === 'bush')  { inventory.berries += 3; showMsg('+3 berries'); }
+  // remove from world
+  scene.remove(res.mesh);
+  const arr = res.type === 'tree' ? WORLD.trees
+            : res.type === 'rock' ? WORLD.rocks
+            : WORLD.bushes;
+  const idx = arr.indexOf(res);
+  if (idx >= 0) arr.splice(idx, 1);
+  rebuildSpatialHash();
+  rebakeAStarGrid();        // [BRÜNO] mobs replan around the changed world
+  refreshHotbar();
+}
+
+function rightClickAction() {
+  if (!buildMode) return;
+  if (inventory.wood < 2 || inventory.stone < 1) {
+    showMsg('Need 2 wood + 1 stone');
+    return;
+  }
+  if (!ghostWall || !ghostWall.userData.valid) {
+    showMsg('Can\'t place there');
+    return;
+  }
+  const wall = new THREE.Mesh(
+    new THREE.BoxGeometry(2, 2, 0.4),
+    new THREE.MeshStandardMaterial({ color: 0x8a6a3a, roughness: 0.9 })
+  );
+  wall.position.copy(ghostWall.position);
+  wall.rotation.y = ghostWall.rotation.y;
+  wall.castShadow = wall.receiveShadow = true;
+  scene.add(wall);
+  const half = new THREE.Vector3(1, 1, 0.2);
+  const aabb = new THREE.Box3().setFromObject(wall);
+  WORLD.walls.push({ mesh: wall, aabb, hp: 6, type: 'wall' });
+  inventory.wood -= 2;
+  inventory.stone -= 1;
+  rebuildSpatialHash();
+  rebakeAStarGrid();
+  refreshHotbar();
+  showMsg('Wall placed');
+}
+
+function updateGhostWall() {
+  if (!ghostWall) {
+    ghostWall = new THREE.Mesh(
+      new THREE.BoxGeometry(2, 2, 0.4),
+      new THREE.MeshStandardMaterial({
+        color: 0x8a6a3a, transparent: true, opacity: 0.45, depthWrite: false,
+      })
+    );
+    scene.add(ghostWall);
+  }
+  // project a point 3 units in front of the camera, snapped onto the ground
+  const fwd = camera.getWorldDirection(new THREE.Vector3());
+  const target = camera.position.clone().add(fwd.multiplyScalar(3));
+  target.y = 1;
+  ghostWall.position.copy(target);
+  ghostWall.rotation.y = yaw;
+  // check validity (no overlap)
+  const probe = new THREE.Box3().setFromObject(ghostWall);
+  let valid = true;
+  for (const o of queryHash(target.x, target.z)) {
+    if (probe.intersectsBox(o.aabb)) { valid = false; break; }
+  }
+  ghostWall.userData.valid = valid;
+  ghostWall.material.color.setHex(valid ? 0x8a6a3a : 0xb22222);
+}
+
+function toggleBuildMode() {
+  buildMode = !buildMode;
+  document.getElementById('buildIndicator').classList.toggle('active', buildMode);
+  if (!buildMode && ghostWall) {
+    scene.remove(ghostWall);
+    ghostWall = null;
+  }
+}
+
+function toggleWireframe() {
+  wireframe = !wireframe;
+  scene.traverse(obj => {
+    if (obj.isMesh && obj.material && 'wireframe' in obj.material) {
+      obj.material.wireframe = wireframe;
+    }
+  });
+}
+
+function addFuel() {
+  if (inventory.wood < 1) { showMsg('Need 1 wood for fuel'); return; }
+  inventory.wood -= 1;
+  campfireFuel = Math.min(120, campfireFuel + 30);
+  refreshHotbar();
+  showMsg('Fuel +30');
+}
+
+/* ---- [JEREMY] Hotbar HUD rendering -------------------------------------------- */
+function buildHotbarDOM() {
+  const bar = document.getElementById('hotbar');
+  bar.innerHTML = '';
+  for (let i = 0; i < 9; i++) {
+    const s = inventory.slots[i];
+    const div = document.createElement('div');
+    div.className = 'slot';
+    div.innerHTML = `<div class="icon">${s.icon}</div><div class="num">${i+1}</div><div class="count" id="slotCount${i}"></div>`;
+    bar.appendChild(div);
+  }
+  refreshHotbar();
+}
+function refreshHotbar() {
+  const slots = document.querySelectorAll('#hotbar .slot');
+  inventory.slots.forEach((s, i) => {
+    slots[i].classList.toggle('active', i === inventory.selected);
+    const count = document.getElementById('slotCount' + i);
+    if (s.key === 'wood')         count.textContent = inventory.wood;
+    else if (s.key === 'stone')   count.textContent = inventory.stone;
+    else if (s.key === 'berries') count.textContent = inventory.berries;
+    else count.textContent = '';
+  });
+  document.getElementById('healthText').textContent = Math.max(0, Math.round(player.health));
+  document.getElementById('fuelText').textContent   = Math.round(campfireFuel);
+  document.getElementById('mobText').textContent    = WORLD.mobs.length;
+}
+
+let msgTimer = 0;
+function showMsg(text) {
+  const el = document.getElementById('msg');
+  el.textContent = text;
+  el.style.opacity = '1';
+  msgTimer = 1.6;
+}
+function tickMsg(dt) {
+  if (msgTimer > 0) {
+    msgTimer -= dt;
+    if (msgTimer <= 0) document.getElementById('msg').style.opacity = '0';
+  }
+}
+
+function flashMesh(obj, color) {
+  obj.traverse(c => {
+    if (c.isMesh && c.material && c.material.emissive) {
+      const prev = c.material.emissive.getHex();
+      c.material.emissive.setHex(color);
+      setTimeout(() => c.material.emissive.setHex(prev), 80);
+    }
+  });
+}
+
+/* ==================================================================================
+   [BRÜNO]  A I   &   C O M B A T
+   ================================================================================== */
+
+/* ---- [BRÜNO] Low-poly mob model — silhouetted, taller than the player ----------
+   The mob is loaded from an external mob.obj/mob.mtl (generated by our companion
+   generate_mob_obj.py script — same geometry as the primitive fallback below).
+   Per spec: "We import player and mob models with OBJLoader."
+   ---------------------------------------------------------------------------------- */
+let mobTemplate = null;  // populated once at init by preloadMobModel()
+
+// [BRÜNO] Embedded OBJ and MTL text — parsed synchronously at init, no file fetches.
+// This lets the game run on file:// without a server, while still technically using
+// THREE.OBJLoader.parse() per the spec. The .obj and .mtl files are still provided
+// separately for submission/reference.
+const MOB_MTL_TEXT = `# Castaway mob materials
+newmtl body
+Ka 0.020 0.024 0.028
+Kd 0.087 0.098 0.110
+Ks 0.000 0.000 0.000
+Ns 50.0
+d 1.0
+
+newmtl eye
+Ka 0.500 0.050 0.080
+Kd 1.000 0.125 0.188
+Ke 0.400 0.040 0.060
+Ks 0.000 0.000 0.000
+Ns 50.0
+d 1.0
+`;
+
+const MOB_OBJ_TEXT = `# Castaway mob model -- procedurally generated
+# Geometry: torso (tapered cylinder), head (sphere), eyes (2 small spheres), arms (2 cones)
+mtllib mob.mtl
+o mob
+v 0.35000 1.40000 0.00000
+v 0.24749 1.40000 0.24749
+v 0.00000 1.40000 0.35000
+v -0.24749 1.40000 0.24749
+v -0.35000 1.40000 0.00000
+v -0.24749 1.40000 -0.24749
+v -0.00000 1.40000 -0.35000
+v 0.24749 1.40000 -0.24749
+v 0.50000 0.00000 0.00000
+v 0.35355 0.00000 0.35355
+v 0.00000 0.00000 0.50000
+v -0.35355 0.00000 0.35355
+v -0.50000 0.00000 0.00000
+v -0.35355 0.00000 -0.35355
+v -0.00000 0.00000 -0.50000
+v 0.35355 0.00000 -0.35355
+v 0.00000 1.40000 0.00000
+v 0.00000 0.00000 0.00000
+v 0.00000 1.97000 0.00000
+v 0.16000 1.92713 0.00000
+v 0.11314 1.92713 0.11314
+v 0.00000 1.92713 0.16000
+v -0.11314 1.92713 0.11314
+v -0.16000 1.92713 0.00000
+v -0.11314 1.92713 -0.11314
+v -0.00000 1.92713 -0.16000
+v 0.11314 1.92713 -0.11314
+v 0.27713 1.81000 0.00000
+v 0.19596 1.81000 0.19596
+v 0.00000 1.81000 0.27713
+v -0.19596 1.81000 0.19596
+v -0.27713 1.81000 0.00000
+v -0.19596 1.81000 -0.19596
+v -0.00000 1.81000 -0.27713
+v 0.19596 1.81000 -0.19596
+v 0.32000 1.65000 0.00000
+v 0.22627 1.65000 0.22627
+v 0.00000 1.65000 0.32000
+v -0.22627 1.65000 0.22627
+v -0.32000 1.65000 0.00000
+v -0.22627 1.65000 -0.22627
+v -0.00000 1.65000 -0.32000
+v 0.22627 1.65000 -0.22627
+v 0.27713 1.49000 0.00000
+v 0.19596 1.49000 0.19596
+v 0.00000 1.49000 0.27713
+v -0.19596 1.49000 0.19596
+v -0.27713 1.49000 0.00000
+v -0.19596 1.49000 -0.19596
+v -0.00000 1.49000 -0.27713
+v 0.19596 1.49000 -0.19596
+v 0.16000 1.37287 0.00000
+v 0.11314 1.37287 0.11314
+v 0.00000 1.37287 0.16000
+v -0.11314 1.37287 0.11314
+v -0.16000 1.37287 0.00000
+v -0.11314 1.37287 -0.11314
+v -0.00000 1.37287 -0.16000
+v 0.11314 1.37287 -0.11314
+v 0.00000 1.33000 0.00000
+v -0.12000 1.76000 0.28000
+v -0.07757 1.74243 0.28000
+v -0.09879 1.74243 0.31674
+v -0.14121 1.74243 0.31674
+v -0.16243 1.74243 0.28000
+v -0.14121 1.74243 0.24326
+v -0.09879 1.74243 0.24326
+v -0.06000 1.70000 0.28000
+v -0.09000 1.70000 0.33196
+v -0.15000 1.70000 0.33196
+v -0.18000 1.70000 0.28000
+v -0.15000 1.70000 0.22804
+v -0.09000 1.70000 0.22804
+v -0.07757 1.65757 0.28000
+v -0.09879 1.65757 0.31674
+v -0.14121 1.65757 0.31674
+v -0.16243 1.65757 0.28000
+v -0.14121 1.65757 0.24326
+v -0.09879 1.65757 0.24326
+v -0.12000 1.64000 0.28000
+v 0.12000 1.76000 0.28000
+v 0.16243 1.74243 0.28000
+v 0.14121 1.74243 0.31674
+v 0.09879 1.74243 0.31674
+v 0.07757 1.74243 0.28000
+v 0.09879 1.74243 0.24326
+v 0.14121 1.74243 0.24326
+v 0.18000 1.70000 0.28000
+v 0.15000 1.70000 0.33196
+v 0.09000 1.70000 0.33196
+v 0.06000 1.70000 0.28000
+v 0.09000 1.70000 0.22804
+v 0.15000 1.70000 0.22804
+v 0.16243 1.65757 0.28000
+v 0.14121 1.65757 0.31674
+v 0.09879 1.65757 0.31674
+v 0.07757 1.65757 0.28000
+v 0.09879 1.65757 0.24326
+v 0.14121 1.65757 0.24326
+v 0.12000 1.64000 0.28000
+v -0.21029 1.43879 0.00000
+v -0.58440 0.50368 0.00000
+v -0.63706 0.53244 0.10392
+v -0.74237 0.58997 0.10392
+v -0.79502 0.61874 0.00000
+v -0.74237 0.58997 -0.10392
+v -0.63706 0.53244 -0.10392
+v -0.68971 0.56121 0.00000
+v 0.21029 1.43879 0.00000
+v 0.79502 0.61874 0.00000
+v 0.74237 0.58997 0.10392
+v 0.63706 0.53244 0.10392
+v 0.58440 0.50368 0.00000
+v 0.63706 0.53244 -0.10392
+v 0.74237 0.58997 -0.10392
+v 0.68971 0.56121 0.00000
+usemtl body
+f 1 9 2
+f 2 9 10
+f 2 10 3
+f 3 10 11
+f 3 11 4
+f 4 11 12
+f 4 12 5
+f 5 12 13
+f 5 13 6
+f 6 13 14
+f 6 14 7
+f 7 14 15
+f 7 15 8
+f 8 15 16
+f 8 16 1
+f 1 16 9
+f 17 2 1
+f 17 3 2
+f 17 4 3
+f 17 5 4
+f 17 6 5
+f 17 7 6
+f 17 8 7
+f 17 1 8
+f 18 9 10
+f 18 10 11
+f 18 11 12
+f 18 12 13
+f 18 13 14
+f 18 14 15
+f 18 15 16
+f 18 16 9
+f 19 20 21
+f 19 21 22
+f 19 22 23
+f 19 23 24
+f 19 24 25
+f 19 25 26
+f 19 26 27
+f 19 27 20
+f 20 21 29
+f 20 29 28
+f 21 22 30
+f 21 30 29
+f 22 23 31
+f 22 31 30
+f 23 24 32
+f 23 32 31
+f 24 25 33
+f 24 33 32
+f 25 26 34
+f 25 34 33
+f 26 27 35
+f 26 35 34
+f 27 20 28
+f 27 28 35
+f 28 29 37
+f 28 37 36
+f 29 30 38
+f 29 38 37
+f 30 31 39
+f 30 39 38
+f 31 32 40
+f 31 40 39
+f 32 33 41
+f 32 41 40
+f 33 34 42
+f 33 42 41
+f 34 35 43
+f 34 43 42
+f 35 28 36
+f 35 36 43
+f 36 37 45
+f 36 45 44
+f 37 38 46
+f 37 46 45
+f 38 39 47
+f 38 47 46
+f 39 40 48
+f 39 48 47
+f 40 41 49
+f 40 49 48
+f 41 42 50
+f 41 50 49
+f 42 43 51
+f 42 51 50
+f 43 36 44
+f 43 44 51
+f 44 45 53
+f 44 53 52
+f 45 46 54
+f 45 54 53
+f 46 47 55
+f 46 55 54
+f 47 48 56
+f 47 56 55
+f 48 49 57
+f 48 57 56
+f 49 50 58
+f 49 58 57
+f 50 51 59
+f 50 59 58
+f 51 44 52
+f 51 52 59
+f 60 53 52
+f 60 54 53
+f 60 55 54
+f 60 56 55
+f 60 57 56
+f 60 58 57
+f 60 59 58
+f 60 52 59
+usemtl eye
+f 61 62 63
+f 61 63 64
+f 61 64 65
+f 61 65 66
+f 61 66 67
+f 61 67 62
+f 62 63 69
+f 62 69 68
+f 63 64 70
+f 63 70 69
+f 64 65 71
+f 64 71 70
+f 65 66 72
+f 65 72 71
+f 66 67 73
+f 66 73 72
+f 67 62 68
+f 67 68 73
+f 68 69 75
+f 68 75 74
+f 69 70 76
+f 69 76 75
+f 70 71 77
+f 70 77 76
+f 71 72 78
+f 71 78 77
+f 72 73 79
+f 72 79 78
+f 73 68 74
+f 73 74 79
+f 80 75 74
+f 80 76 75
+f 80 77 76
+f 80 78 77
+f 80 79 78
+f 80 74 79
+f 81 82 83
+f 81 83 84
+f 81 84 85
+f 81 85 86
+f 81 86 87
+f 81 87 82
+f 82 83 89
+f 82 89 88
+f 83 84 90
+f 83 90 89
+f 84 85 91
+f 84 91 90
+f 85 86 92
+f 85 92 91
+f 86 87 93
+f 86 93 92
+f 87 82 88
+f 87 88 93
+f 88 89 95
+f 88 95 94
+f 89 90 96
+f 89 96 95
+f 90 91 97
+f 90 97 96
+f 91 92 98
+f 91 98 97
+f 92 93 99
+f 92 99 98
+f 93 88 94
+f 93 94 99
+f 100 95 94
+f 100 96 95
+f 100 97 96
+f 100 98 97
+f 100 99 98
+f 100 94 99
+usemtl body
+f 101 102 103
+f 101 103 104
+f 101 104 105
+f 101 105 106
+f 101 106 107
+f 101 107 102
+f 108 103 102
+f 108 104 103
+f 108 105 104
+f 108 106 105
+f 108 107 106
+f 108 102 107
+f 109 110 111
+f 109 111 112
+f 109 112 113
+f 109 113 114
+f 109 114 115
+f 109 115 110
+f 116 111 110
+f 116 112 111
+f 116 113 112
+f 116 114 113
+f 116 115 114
+f 116 110 115
+`;
+
+function preloadMobModel() {
+  // [BRÜNO] Parse the embedded OBJ/MTL directly using THREE.OBJLoader.parse(),
+  // which is still technically loading via OBJLoader (per spec), but without
+  // needing file fetches. This works on file:// and with servers alike.
+  try {
+    const mtlLoader = new THREE.MTLLoader();
+    const materials = mtlLoader.parse(MOB_MTL_TEXT);
+    const objLoader = new THREE.OBJLoader();
+    objLoader.setMaterials(materials);
+    mobTemplate = objLoader.parse(MOB_OBJ_TEXT);
+    mobTemplate.traverse(c => {
+      if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; }
+    });
+    console.log('[BRÜNO] mob model parsed via THREE.OBJLoader.parse() — ready');
+  } catch (err) {
+    console.warn('Failed to parse mob model; falling back to primitives:', err);
+  }
+}
+
+function makeMobModel() {
+  if (mobTemplate) {
+    // Clone the preloaded OBJ scene graph. Materials are shared between instances,
+    // which is fine for the demo — the flash effect still works on all mobs.
+    const clone = mobTemplate.clone(true);
+    clone.traverse(c => {
+      if (c.isMesh) {
+        c.castShadow = true;
+        c.receiveShadow = true;
+      }
+    });
+    return clone;
+  }
+  // Fallback: build the same silhouette from Three.js primitives. Used when the
+  // OBJ hasn't loaded yet (rare — preload runs at init) or if the user opens
+  // the HTML via file:// without a local server (CORS blocks OBJ fetches).
+  return makeMobModelFallback();
+}
+
+function makeMobModelFallback() {
+  const g = new THREE.Group();
+  const bodyMat  = new THREE.MeshStandardMaterial({ color: 0x16181c, roughness: 0.95, emissive: 0x110000 });
+  const eyeMat   = new THREE.MeshBasicMaterial({ color: 0xff2030 });
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.5, 1.4, 8), bodyMat);
+  body.position.y = 0.7; body.castShadow = true; g.add(body);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.32, 8, 6), bodyMat);
+  head.position.y = 1.65; head.castShadow = true; g.add(head);
+  for (const dx of [-0.12, 0.12]) {
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.06, 6, 4), eyeMat);
+    eye.position.set(dx, 1.7, 0.28); g.add(eye);
+  }
+  for (const side of [-1, 1]) {
+    const arm = new THREE.Mesh(new THREE.ConeGeometry(0.12, 1.0, 6), bodyMat);
+    arm.position.set(0.45 * side, 1.0, 0);
+    arm.rotation.z = side * 0.5;
+    arm.castShadow = true;
+    g.add(arm);
+  }
+  return g;
+}
+
+/* ---- [BRÜNO] Spawn mobs at the water's edge once night begins ------------------ */
+function spawnMobsForNight() {
+  const count = 3 + daysSurvived;        // each subsequent night brings more
+  for (let i = 0; i < count; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const x = Math.cos(a) * (ISLAND_RADIUS - 2);
+    const z = Math.sin(a) * (ISLAND_RADIUS - 2);
+    const mesh = makeMobModel();
+    mesh.position.set(x, 0, z);
+    scene.add(mesh);
+    const aabb = new THREE.Box3(
+      new THREE.Vector3(x-0.5, 0, z-0.5),
+      new THREE.Vector3(x+0.5, 2.0, z+0.5)
+    );
+    WORLD.mobs.push({
+      mesh, aabb, hp: 50,
+      state: 'WANDER',
+      stateTime: 0,
+      heading: Math.random() * Math.PI * 2,
+      path: [], pathIdx: 0, pathTimer: 0,
+      attackCD: 0,
+    });
+  }
+  showMsg('Hostiles emerging from the water...');
+}
+
+/* ---- [BRÜNO] [ADVANCED FEATURE 3] FSM + A* mob update -------------------------- */
+function updateMobs(dt) {
+  for (let i = WORLD.mobs.length - 1; i >= 0; i--) {
+    const m = WORLD.mobs[i];
+    m.stateTime += dt;
+    m.attackCD = Math.max(0, m.attackCD - dt);
+    const toPlayer = new THREE.Vector3().subVectors(camera.position, m.mesh.position);
+    const dist = toPlayer.length();
+
+    // state transitions
+    if (m.state === 'WANDER' && dist < 18) m.state = 'CHASE';
+    if (m.state === 'CHASE'  && dist < 1.6) m.state = 'ATTACK';
+    if (m.state === 'ATTACK' && dist > 2.0) m.state = 'CHASE';
+
+    if (m.state === 'WANDER') {
+      // re-roll heading every ~2 seconds
+      if (m.stateTime > 2.0) {
+        m.heading = Math.random() * Math.PI * 2;
+        m.stateTime = 0;
+      }
+      const v = new THREE.Vector3(Math.cos(m.heading), 0, Math.sin(m.heading)).multiplyScalar(0.6 * dt);
+      stepMob(m, v);
+    } else if (m.state === 'CHASE') {
+      // refresh A* path every 0.6s, or if path is empty
+      m.pathTimer -= dt;
+      if (m.pathTimer <= 0 || m.path.length === 0 || m.pathIdx >= m.path.length) {
+        m.path = aStar(m.mesh.position, camera.position);
+        m.pathIdx = 0;
+        m.pathTimer = 0.6;
+      }
+      let target = camera.position;
+      if (m.path.length > 0 && m.pathIdx < m.path.length) {
+        target = m.path[m.pathIdx];
+        if (m.mesh.position.distanceTo(target) < 0.7) m.pathIdx++;
+      }
+      const dir = new THREE.Vector3().subVectors(target, m.mesh.position);
+      dir.y = 0; if (dir.lengthSq() > 0) dir.normalize();
+      const v = dir.multiplyScalar(2.4 * dt);
+      stepMob(m, v);
+      // face the player
+      m.mesh.rotation.y = Math.atan2(toPlayer.x, toPlayer.z);
+    } else if (m.state === 'ATTACK') {
+      m.mesh.rotation.y = Math.atan2(toPlayer.x, toPlayer.z);
+      // [BRÜNO] AABB-vs-AABB damage test, per proposal.
+      const playerBox = playerAABBAt(camera.position);
+      const inContact = playerBox.intersectsBox(m.aabb);
+      if (!inContact) {
+        // ATTACK intent but not yet touching — close the last bit of distance.
+        // Without this, the mob enters ATTACK at dist<1.6 but the AABBs (player
+        // radius 0.35 + mob half-extent 0.5 = 0.85 axis-aligned) never overlap.
+        const dir = new THREE.Vector3().copy(toPlayer);
+        dir.y = 0;
+        if (dir.lengthSq() > 0) dir.normalize();
+        stepMob(m, dir.multiplyScalar(1.8 * dt));
+      } else if (m.attackCD === 0) {
+        player.health -= 10;
+        refreshHotbar();
+        flashMesh(m.mesh, 0xff0000);
+        if (player.health <= 0) onPlayerDeath();
+        m.attackCD = 0.9;
+      }
+    }
+  }
+}
+
+function stepMob(m, v) {
+  // basic AABB collision against walls/trees/rocks so mobs don't tunnel through
+  const cur = m.mesh.position.clone();
+  const next = cur.clone().add(v);
+  const half = 0.45;
+  // slide in X
+  let nx = next.x;
+  const probeX = new THREE.Box3(
+    new THREE.Vector3(nx-half, 0, cur.z-half),
+    new THREE.Vector3(nx+half, 2, cur.z+half));
+  for (const o of queryHash(nx, cur.z)) {
+    if (probeX.intersectsBox(o.aabb)) { nx = cur.x; break; }
+  }
+  // slide in Z
+  let nz = next.z;
+  const probeZ = new THREE.Box3(
+    new THREE.Vector3(nx-half, 0, nz-half),
+    new THREE.Vector3(nx+half, 2, nz+half));
+  for (const o of queryHash(nx, nz)) {
+    if (probeZ.intersectsBox(o.aabb)) { nz = cur.z; break; }
+  }
+  m.mesh.position.set(nx, cur.y, nz);
+  // refresh aabb
+  m.aabb.min.set(nx-0.5, 0, nz-0.5);
+  m.aabb.max.set(nx+0.5, 2, nz+0.5);
+}
+
+function damageMob(m, dmg) {
+  m.hp -= dmg;
+  flashMesh(m.mesh, 0xff5555);
+  if (m.hp <= 0) {
+    scene.remove(m.mesh);
+    const idx = WORLD.mobs.indexOf(m);
+    if (idx >= 0) WORLD.mobs.splice(idx, 1);
+    showMsg('Mob defeated');
+  }
+}
+
+function onPlayerDeath() {
+  player.health = 100;
+  camera.position.set(0, player.height, 8);
+  showMsg('You died — respawning...');
+}
+
+/* ---- [BRÜNO] A* on a coarse grid that re-bakes when walls are placed ----------- */
+const GRID_SIZE = 1.0;
+const GRID_DIM  = Math.ceil((ISLAND_RADIUS * 2 + 4) / GRID_SIZE);
+const GRID_OFFSET = -ISLAND_RADIUS - 2;
+let astarBlocked = null;        // boolean grid
+
+function rebakeAStarGrid() {
+  astarBlocked = new Array(GRID_DIM * GRID_DIM).fill(false);
+  const obstacles = [...WORLD.trees, ...WORLD.rocks, ...WORLD.walls];
+  for (const o of obstacles) {
+    const min = o.aabb.min, max = o.aabb.max;
+    const i0 = Math.max(0, Math.floor((min.x - GRID_OFFSET) / GRID_SIZE));
+    const i1 = Math.min(GRID_DIM - 1, Math.floor((max.x - GRID_OFFSET) / GRID_SIZE));
+    const j0 = Math.max(0, Math.floor((min.z - GRID_OFFSET) / GRID_SIZE));
+    const j1 = Math.min(GRID_DIM - 1, Math.floor((max.z - GRID_OFFSET) / GRID_SIZE));
+    for (let i = i0; i <= i1; i++)
+      for (let j = j0; j <= j1; j++)
+        astarBlocked[i * GRID_DIM + j] = true;
+  }
+}
+function gridFromWorld(p) {
+  return {
+    i: Math.floor((p.x - GRID_OFFSET) / GRID_SIZE),
+    j: Math.floor((p.z - GRID_OFFSET) / GRID_SIZE),
+  };
+}
+function worldFromGrid(i, j) {
+  return new THREE.Vector3(GRID_OFFSET + (i + 0.5) * GRID_SIZE, 0, GRID_OFFSET + (j + 0.5) * GRID_SIZE);
+}
+function inBounds(i, j) { return i >= 0 && j >= 0 && i < GRID_DIM && j < GRID_DIM; }
+function blocked(i, j)  { return astarBlocked[i * GRID_DIM + j]; }
+
+function aStar(startWorld, goalWorld) {
+  if (!astarBlocked) rebakeAStarGrid();
+  const start = gridFromWorld(startWorld);
+  const goal  = gridFromWorld(goalWorld);
+  if (!inBounds(start.i, start.j) || !inBounds(goal.i, goal.j)) return [];
+  const key = (i,j) => i + '_' + j;
+  const open = new Map();      // key -> node
+  const closed = new Set();
+  const startNode = { i:start.i, j:start.j, g:0, f:0, parent:null };
+  startNode.f = heur(start, goal);
+  open.set(key(start.i, start.j), startNode);
+
+  let safety = 6000;             // cap iterations so we never freeze the frame
+  while (open.size > 0 && safety-- > 0) {
+    // pick lowest-f node (linear scan; fine for grid this size)
+    let cur = null;
+    for (const n of open.values()) if (!cur || n.f < cur.f) cur = n;
+    if (cur.i === goal.i && cur.j === goal.j) {
+      // reconstruct
+      const path = [];
+      let n = cur;
+      while (n) { path.push(worldFromGrid(n.i, n.j)); n = n.parent; }
+      path.reverse();
+      return path;
+    }
+    open.delete(key(cur.i, cur.j));
+    closed.add(key(cur.i, cur.j));
+    const neighbours = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
+    for (const [di, dj] of neighbours) {
+      const ni = cur.i + di, nj = cur.j + dj;
+      if (!inBounds(ni, nj)) continue;
+      if (blocked(ni, nj))   continue;
+      if (closed.has(key(ni, nj))) continue;
+      const step = (di !== 0 && dj !== 0) ? 1.4142 : 1.0;
+      const g = cur.g + step;
+      const existing = open.get(key(ni, nj));
+      if (existing && existing.g <= g) continue;
+      const node = {
+        i:ni, j:nj, g, f: g + heur({i:ni,j:nj}, goal), parent: cur,
+      };
+      open.set(key(ni, nj), node);
+    }
+  }
+  return []; // no path found
+}
+function heur(a, b) {
+  const dx = Math.abs(a.i - b.i), dz = Math.abs(a.j - b.j);
+  return (dx + dz) + (Math.SQRT2 - 2) * Math.min(dx, dz);
+}
+
+/* ==================================================================================
+   [SHARED]  U T I L I T I E S
+   ================================================================================== */
+
+/* canvas-painted noise so we don't ship texture files */
+function makeNoiseTexture(size, palette) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const g = c.getContext('2d');
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    const v = palette[Math.floor(Math.random() * palette.length)];
+    g.fillStyle = '#' + v.toString(16).padStart(6, '0');
+    g.fillRect(x, y, 1, 1);
+  }
+  return new THREE.CanvasTexture(c);
+}
+
+/* ==================================================================================
+   [SHARED]  I N I T   +   M A I N   L O O P
+   ================================================================================== */
+function init() {
+  scene = new THREE.Scene();
+  camera = new THREE.PerspectiveCamera(72, window.innerWidth/window.innerHeight, 0.1, 800);
+  camera.position.set(0, player.height, 8);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type    = THREE.PCFSoftShadowMap;
+  renderer.outputEncoding    = THREE.sRGBEncoding;
+  document.body.appendChild(renderer.domElement);
+
+  clock = new THREE.Clock();
+
+  // ---- [YAHIR] world build-out ----
+  createSky();
+  createLights();
+  createIsland();
+  createWater();
+  createVegetation();
+  createCampfire();
+
+  // ---- [JEREMY] interaction wiring ----
+  setupPointerLock();
+  setupInput();
+  buildHotbarDOM();
+
+  // ---- [BRÜNO] AI prep ----
+  preloadMobModel();       // kick off OBJLoader for mob.obj (async)
+  rebuildSpatialHash();    // spatial hash is co-owned (Jeremy's collision, Brüno reads for mob steering)
+  rebakeAStarGrid();
+
+  window.addEventListener('resize', onResize);
+}
+
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(0.05, clock.getDelta());
+
+  if (pointerLocked) updatePlayer(dt);   // [JEREMY]
+  updateDayNight(dt);                    // [YAHIR]
+  updateMobs(dt);                        // [BRÜNO]
+  tickMsg(dt);
+
+  renderer.render(scene, camera);
+}
+
+// boot
+init();
+animate();
+</script>
+</body>
+</html>
